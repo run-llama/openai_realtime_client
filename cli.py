@@ -175,7 +175,6 @@ class InputHandler:
                     self.command_queue.put_nowait, ('enter', self.text_input)
                 )
                 self.text_input = ""
-                print("\nYou: ", end="", flush=True)
             elif key == keyboard.KeyCode.from_char('r'):
                 self.loop.call_soon_threadsafe(
                     self.command_queue.put_nowait, ('r', None)
@@ -187,10 +186,8 @@ class InputHandler:
             elif hasattr(key, 'char'):
                 if key == keyboard.Key.backspace:
                     self.text_input = self.text_input[:-1]
-                    print('\b \b', end="", flush=True)
                 else:
                     self.text_input += key.char
-                    print(key.char, end="", flush=True)
         except AttributeError:
             pass
 
@@ -224,8 +221,8 @@ async def main():
         print("- Press 'r' to start recording audio")
         print("- Press 'space' to stop recording")
         print("- Press 'q' to quit")
-        print("\nYou: ", end="", flush=True)
-        
+        print("")        
+ 
         while True:
             # Wait for commands from the input handler
             command, data = await input_handler.command_queue.get()
@@ -247,7 +244,8 @@ async def main():
             elif command == 'enter' and data:
                 # Send text message
                 await client.send_text(data)
-            
+
+            await asyncio.sleep(0.01) 
     except Exception as e:
         print(f"Error: {e}")
     finally:

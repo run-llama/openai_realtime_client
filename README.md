@@ -2,14 +2,22 @@
 
 ## Installation
 
-Install all dependendencies:
+Install system deps:
 
 ```bash
 brew install ffmpeg
 ```
 
+Install python deps:
+
 ```bash
-pip install pyaudio pynput pydub websockets
+pip install -U openai pyaudio pynput pydub websockets
+```
+
+Set your openai key:
+
+```bash
+export OPENAI_API_KEY="sk-..."
 ```
 
 ## Usage
