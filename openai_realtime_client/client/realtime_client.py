@@ -236,7 +236,6 @@ class RealtimeClient:
                         self.on_audio_delta(audio_bytes)
                         
                 elif event_type == "response.function_call_arguments.done":
-                    print(f"Function call arguments done: {event}")
                     await self.call_tool(event["call_id"], event['name'], json.loads(event['arguments']))
 
                 elif event_type in self.extra_event_handlers:

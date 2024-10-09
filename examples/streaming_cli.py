@@ -11,7 +11,6 @@ def get_my_phone_number(name: str) -> str:
     return "1234567890"
 
 tools = [FunctionTool.from_defaults(fn=get_my_phone_number)]
-# tools = []
 
 async def main():
     audio_handler = AudioHandler()

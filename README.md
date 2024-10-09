@@ -27,7 +27,7 @@ export OPENAI_API_KEY="sk-..."
 
 ## Usage
 
-Run the interactive CLI with manual VAD:
+Run the interactive CLI with manual VAD (try asking for your phone number to see function calling in action):
 
 ```bash
 python ./examples/manual_cli.py

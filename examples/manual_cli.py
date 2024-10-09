@@ -7,12 +7,11 @@ from openai_realtime_client import RealtimeClient, InputHandler, AudioHandler
 from llama_index.core.tools import FunctionTool
 
 # Add your own tools here!
-# def get_my_phone_number(name: str) -> str:
-#     """Get my phone number."""
-#     return "1234567890"
+def get_my_phone_number(name: str) -> str:
+    """Get my phone number."""
+    return "1234567890"
 
-# tools = [FunctionTool.from_defaults(fn=get_my_phone_number)]
-tools = []
+tools = [FunctionTool.from_defaults(fn=get_my_phone_number)]
 
 async def main():
     # Initialize handlers
