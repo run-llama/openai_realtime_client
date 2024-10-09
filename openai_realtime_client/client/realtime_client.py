@@ -1,11 +1,13 @@
 import websockets
 import json
 import base64
-import asyncio
+import io
+
 from typing import Optional, Callable, List, Dict, Any
 from enum import Enum
 from pydub import AudioSegment
-import io
+
+from llama_index.core.tools import BaseTool, AsyncBaseTool, ToolSelection, adapt_to_async_tool, acall_tool_with_selection
 
 
 class TurnDetectionMode(Enum):
@@ -13,15 +15,34 @@ class TurnDetectionMode(Enum):
     MANUAL = "manual"
 
 class RealtimeClient:
+    """
+    A client for interacting with the OpenAI Realtime API.
+
+    This class provides methods to connect to the Realtime API, send text and audio data,
+    handle responses, and manage the WebSocket connection.
+
+    Attributes:
+        api_key (str): The API key for authentication.
+        model (str): The model to use for text and audio processing.
+        voice (str): The voice to use for audio output.
+        instructions (str): The instructions for the chatbot.
+        turn_detection_mode (TurnDetectionMode): The mode for turn detection.
+        tools (List[BaseTool]): The tools to use for function calling.
+        on_text_delta (Callable[[str], None]): Callback for text delta events.
+        on_audio_delta (Callable[[bytes], None]): Callback for audio delta events.
+        extra_event_handlers (Dict[str, Callable[[Dict[str, Any]], None]]): Additional event handlers.
+    """
     def __init__(
         self, 
         api_key: str,
         model: str = "gpt-4o-realtime-preview-2024-10-01",
         voice: str = "alloy",
         instructions: str = "You are a helpful assistant",
+        turn_detection_mode: TurnDetectionMode = TurnDetectionMode.MANUAL,
+        tools: Optional[List[BaseTool]] = None,
         on_text_delta: Optional[Callable[[str], None]] = None,
         on_audio_delta: Optional[Callable[[bytes], None]] = None,
-        on_function_call: Optional[Callable[[Dict[str, Any]], None]] = None
+        extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], None]]] = None
     ):
         self.api_key = api_key
         self.model = model
@@ -29,10 +50,15 @@ class RealtimeClient:
         self.ws = None
         self.on_text_delta = on_text_delta
         self.on_audio_delta = on_audio_delta
-        self.on_function_call = on_function_call
         self.instructions = instructions
         self.base_url = "wss://api.openai.com/v1/realtime"
-        self.conversation_history = []
+        self.extra_event_handlers = extra_event_handlers or {}
+        self.turn_detection_mode = turn_detection_mode
+
+        tools = tools or []
+        for i, tool in enumerate(tools):
+            tools[i] = adapt_to_async_tool(tool)
+        self.tools: List[AsyncBaseTool] = tools
         
     async def connect(self) -> None:
         """Establish WebSocket connection with the Realtime API."""
@@ -45,20 +71,47 @@ class RealtimeClient:
         self.ws = await websockets.connect(url, extra_headers=headers)
         
         # Set up default session configuration
-        await self.update_session({
-            "modalities": ["text", "audio"],
-            "instructions": self.instructions,
-            "voice": self.voice,
-            "input_audio_format": "pcm16",
-            "output_audio_format": "pcm16",
-            "input_audio_transcription": {
-                "model": "whisper-1"
-            },
-            "tools": [],
-            "tool_choice": "auto",
-            "temperature": 0.8,
-        }
-    )
+        tools = [t.metadata.to_openai_tool()['function'] for t in self.tools]
+        for t in tools:
+            t['type'] = 'function'  # TODO: OpenAI docs didn't say this was needed, but it was
+
+        
+        if self.turn_detection_mode == TurnDetectionMode.MANUAL:
+            await self.update_session({
+                "modalities": ["text", "audio"],
+                "instructions": self.instructions,
+                "voice": self.voice,
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "input_audio_transcription": {
+                    "model": "whisper-1"
+                },
+                "tools": tools,
+                "tool_choice": "auto",
+                "temperature": 0.8,
+            })
+        elif self.turn_detection_mode == TurnDetectionMode.SERVER_VAD:
+            await self.update_session({
+                "modalities": ["text", "audio"],
+                "instructions": self.instructions,
+                "voice": self.voice,
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "input_audio_transcription": {
+                    "model": "whisper-1"
+                },
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 500,
+                    "silence_duration_ms": 200
+                },
+                "tools": tools,
+                "tool_choice": "auto",
+                "temperature": 0.8,
+            })
+        else:
+            raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
 
     async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration."""
@@ -105,10 +158,21 @@ class RealtimeClient:
         await self.ws.send(json.dumps(commit_event))
         
         # In manual mode, we need to explicitly request a response
-        await self.create_response()
+        if self.turn_detection_mode == TurnDetectionMode.MANUAL:
+            await self.create_response()
+
+    async def stream_audio(self, audio_chunk: bytes) -> None:
+        """Stream raw PCM audio data to the API."""
+        audio_b64 = base64.b64encode(audio_chunk).decode()
+        
+        append_event = {
+            "type": "input_audio_buffer.append",
+            "audio": audio_b64
+        }
+        await self.ws.send(json.dumps(append_event))
 
     async def create_response(self, functions: Optional[List[Dict[str, Any]]] = None) -> None:
-        """Request a response from the API."""
+        """Request a response from the API. Needed when using manual mode."""
         event = {
             "type": "response.create",
             "response": {
@@ -120,17 +184,20 @@ class RealtimeClient:
             
         await self.ws.send(json.dumps(event))
 
-    async def send_function_result(self, function_call_id: str, result: Any) -> None:
+    async def send_function_result(self, call_id: str, result: Any) -> None:
         """Send function call result back to the API."""
         event = {
             "type": "conversation.item.create",
             "item": {
                 "type": "function_call_output",
-                "function_call_id": function_call_id,
-                "content": result
+                "call_id": call_id,
+                "output": result
             }
         }
         await self.ws.send(json.dumps(event))
+
+        # functions need a manual response
+        await self.create_response()
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""
@@ -138,6 +205,15 @@ class RealtimeClient:
             "type": "response.cancel"
         }
         await self.ws.send(json.dumps(event))
+    
+    async def call_tool(self, call_id: str,tool_name: str, tool_arguments: Dict[str, Any]) -> None:
+        tool_selection = ToolSelection(
+            tool_id="tool_id",
+            tool_name=tool_name,
+            tool_kwargs=tool_arguments
+        )
+        tool_result = await acall_tool_with_selection(tool_selection, self.tools)
+        await self.send_function_result(call_id, str(tool_result))
 
     async def handle_messages(self) -> None:
         """Main message handling loop."""
@@ -145,8 +221,6 @@ class RealtimeClient:
             async for message in self.ws:
                 event = json.loads(message)
                 event_type = event.get("type")
-                
-                print(f"Event: {event_type}")
                 
                 if event_type == "error":
                     print(f"Error: {event['error']}")
@@ -162,11 +236,11 @@ class RealtimeClient:
                         self.on_audio_delta(audio_bytes)
                         
                 elif event_type == "response.function_call_arguments.done":
-                    if self.on_function_call:
-                        self.on_function_call({
-                            "name": event["name"],
-                            "arguments": event["arguments"]
-                        })
+                    print(f"Function call arguments done: {event}")
+                    await self.call_tool(event["call_id"], event['name'], json.loads(event['arguments']))
+
+                elif event_type in self.extra_event_handlers:
+                    self.extra_event_handlers[event_type](event)
 
         except websockets.exceptions.ConnectionClosed:
             print("Connection closed")
@@ -177,40 +251,3 @@ class RealtimeClient:
         """Close the WebSocket connection."""
         if self.ws:
             await self.ws.close()
-
-# Example usage:
-async def main():
-    def on_text(text: str):
-        print(f"Text received: {text}")
-        
-    def on_audio(audio: bytes):
-        # Handle audio chunks (e.g., play them or save to file)
-        pass
-        
-    def on_function_call(func_data: Dict[str, Any]):
-        print(f"Function call: {func_data}")
-    
-    client = RealtimeClient(
-        api_key="your-api-key",
-        on_text_delta=on_text,
-        on_audio_delta=on_audio,
-        on_function_call=on_function_call
-    )
-    
-    try:
-        await client.connect()
-        
-        # Start message handling in the background
-        message_handler = asyncio.create_task(client.handle_messages())
-        
-        # Send a text message
-        await client.send_text("Hello! How are you today?")
-        
-        # Wait for a while to receive responses
-        await asyncio.sleep(5)
-        
-    finally:
-        await client.close()
-
-if __name__ == "__main__":
-    asyncio.run(main())

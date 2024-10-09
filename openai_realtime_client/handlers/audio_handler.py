@@ -3,16 +3,37 @@ import pyaudio
 import wave
 import queue
 import io
-import os
 from typing import Optional
 
 from pydub import AudioSegment
-from pynput import keyboard
 import threading
 
-from realtime_client import RealtimeClient
+from ..client.realtime_client import RealtimeClient
+
 
 class AudioHandler:
+    """
+    Handles audio input and output for the chatbot.
+
+    Uses PyAudio for audio input and output, and runs a separate thread for recording and playing audio.
+
+    When playing audio, it uses a buffer to store audio data and plays it continuously to ensure smooth playback.
+
+    Attributes:
+        format (int): The audio format (paInt16).
+        channels (int): The number of audio channels (1).
+        rate (int): The sample rate (24000).
+        chunk (int): The size of the audio buffer (1024).
+        audio (pyaudio.PyAudio): The PyAudio object.
+        recording_stream (pyaudio.Stream): The stream for recording audio.
+        recording_thread (threading.Thread): The thread for recording audio.
+        recording (bool): Whether the audio is currently being recorded.
+        streaming (bool): Whether the audio is currently being streamed.
+        stream (pyaudio.Stream): The stream for streaming audio.
+        playback_stream (pyaudio.Stream): The stream for playing audio.
+        playback_buffer (queue.Queue): The buffer for playing audio.
+        stop_playback (bool): Whether the audio playback should be stopped.
+    """
     def __init__(self):
         # Audio parameters
         self.format = pyaudio.paInt16
@@ -20,11 +41,16 @@ class AudioHandler:
         self.rate = 24000
         self.chunk = 1024
 
-        # Recording params
         self.audio = pyaudio.PyAudio()
+
+        # Recording params
         self.recording_stream: Optional[pyaudio.Stream] = None
         self.recording_thread = None
         self.recording = False
+
+        # streaming params
+        self.streaming = False
+        self.stream = None
 
         # Playback params
         self.playback_stream = None
@@ -90,6 +116,41 @@ class AudioHandler:
         wav_buffer.seek(0)
         return wav_buffer.read()
 
+    async def start_streaming(self, client: RealtimeClient):
+        """Start continuous audio streaming."""
+        if self.streaming:
+            return
+        
+        self.streaming = True
+        self.stream = self.audio.open(
+            format=self.format,
+            channels=self.channels,
+            rate=self.rate,
+            input=True,
+            frames_per_buffer=self.chunk
+        )
+        
+        print("\nStreaming audio... Press 'q' to stop.")
+        
+        while self.streaming:
+            try:
+                # Read raw PCM data
+                data = self.stream.read(self.chunk, exception_on_overflow=False)
+                # Stream directly without trying to decode
+                await client.stream_audio(data)
+            except Exception as e:
+                print(f"Error streaming: {e}")
+                break
+            await asyncio.sleep(0.01)
+
+    def stop_streaming(self):
+        """Stop audio streaming."""
+        self.streaming = False
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
+            self.stream = None
+
     def play_audio(self, audio_data: bytes):
         """Add audio data to the buffer"""
         try:
@@ -154,109 +215,9 @@ class AudioHandler:
         if self.recording_stream:
             self.recording_stream.stop_stream()
             self.recording_stream.close()
+        
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
 
         self.audio.terminate()
-
-class InputHandler:
-    def __init__(self):
-        self.text_input = ""
-        self.text_ready = asyncio.Event()
-        self.command_queue = asyncio.Queue()
-        self.loop = None
-
-    def on_press(self, key):
-        try:
-            if key == keyboard.Key.space:
-                self.loop.call_soon_threadsafe(
-                    self.command_queue.put_nowait, ('space', None)
-                )
-            elif key == keyboard.Key.enter:
-                self.loop.call_soon_threadsafe(
-                    self.command_queue.put_nowait, ('enter', self.text_input)
-                )
-                self.text_input = ""
-            elif key == keyboard.KeyCode.from_char('r'):
-                self.loop.call_soon_threadsafe(
-                    self.command_queue.put_nowait, ('r', None)
-                )
-            elif key == keyboard.KeyCode.from_char('q'):
-                self.loop.call_soon_threadsafe(
-                    self.command_queue.put_nowait, ('q', None)
-                )
-            elif hasattr(key, 'char'):
-                if key == keyboard.Key.backspace:
-                    self.text_input = self.text_input[:-1]
-                else:
-                    self.text_input += key.char
-        except AttributeError:
-            pass
-
-async def main():
-    # Initialize handlers
-    audio_handler = AudioHandler()
-    input_handler = InputHandler()
-    input_handler.loop = asyncio.get_running_loop()
-    
-    # Initialize the realtime client
-    client = RealtimeClient(
-        api_key=os.environ.get("OPENAI_API_KEY"),
-        on_text_delta=lambda text: print(f"\nAssistant: {text}", end="", flush=True),
-        on_audio_delta=lambda audio: audio_handler.play_audio(audio)
-    )
-    
-    # Start keyboard listener in a separate thread
-    listener = keyboard.Listener(on_press=input_handler.on_press)
-    listener.start()
-    
-    try:
-        # Connect to the API
-        await client.connect()
-        
-        # Start message handling in the background
-        message_handler = asyncio.create_task(client.handle_messages())
-        
-        print("Connected to OpenAI Realtime API!")
-        print("Commands:")
-        print("- Type your message and press Enter to send text")
-        print("- Press 'r' to start recording audio")
-        print("- Press 'space' to stop recording")
-        print("- Press 'q' to quit")
-        print("")        
- 
-        while True:
-            # Wait for commands from the input handler
-            command, data = await input_handler.command_queue.get()
-            
-            if command == 'q':
-                break
-            elif command == 'r':
-                # Start recording
-                audio_handler.start_recording()
-            elif command == 'space':
-                print("[About to stop recording]")
-                if audio_handler.recording:
-                    # Stop recording and get audio data
-                    audio_data = audio_handler.stop_recording()
-                    print("[Recording stopped]")
-                    if audio_data:
-                        await client.send_audio(audio_data)
-                        print("[Audio sent]")
-            elif command == 'enter' and data:
-                # Send text message
-                await client.send_text(data)
-
-            await asyncio.sleep(0.01) 
-    except Exception as e:
-        print(f"Error: {e}")
-    finally:
-        # Clean up
-        listener.stop()
-        audio_handler.cleanup()
-        await client.close()
-
-if __name__ == "__main__":
-    # Install required packages:
-    # pip install pyaudio pynput pydub websockets
-
-    print("Starting Realtime API CLI...")
-    asyncio.run(main())
