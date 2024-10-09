@@ -55,6 +55,7 @@ class AudioHandler:
         # Playback params
         self.playback_stream = None
         self.playback_buffer = queue.Queue(maxsize=20)
+        self.playback_event = threading.Event()
         self.playback_thread = None
         self.stop_playback = False
 
@@ -162,6 +163,7 @@ class AudioHandler:
         
         if not self.playback_thread or not self.playback_thread.is_alive():
             self.stop_playback = False
+            self.playback_event.clear()
             self.playback_thread = threading.Thread(target=self._continuous_playback)
             self.playback_thread.start()
 
@@ -181,6 +183,9 @@ class AudioHandler:
                 self._play_audio_chunk(audio_chunk)
             except queue.Empty:
                 continue
+            
+            if self.playback_event.is_set():
+                break
 
         if self.playback_stream:
             self.playback_stream.stop_stream()
@@ -200,13 +205,27 @@ class AudioHandler:
             # Ensure the audio is in the correct format for playback
             audio_data = audio_segment.raw_data
             
-            # Play the audio chunk
-            self.playback_stream.write(audio_data)
+            # Play the audio chunk in smaller portions to allow for quicker interruption
+            chunk_size = 1024  # Adjust this value as needed
+            for i in range(0, len(audio_data), chunk_size):
+                if self.playback_event.is_set():
+                    break
+                chunk = audio_data[i:i+chunk_size]
+                self.playback_stream.write(chunk)
         except Exception as e:
             print(f"Error playing audio chunk: {e}")
 
+    def stop_playback_immediately(self):
+        """Stop audio playback immediately."""
+        self.stop_playback = True
+        self.playback_buffer.queue.clear()  # Clear any pending audio
+        self.currently_playing = False
+        self.playback_event.set()
+
     def cleanup(self):
         """Clean up audio resources"""
+        self.stop_playback_immediately()
+
         self.stop_playback = True
         if self.playback_thread:
             self.playback_thread.join()

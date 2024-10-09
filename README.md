@@ -16,6 +16,7 @@ Install python deps:
 
 ```bash
 git clone https://github.com/run-llama/openai_realtime_client.git
+cd openai_realtime_client
 pip install -e .
 ```
 

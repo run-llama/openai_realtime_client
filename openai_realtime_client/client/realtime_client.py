@@ -1,3 +1,4 @@
+import asyncio
 import websockets
 import json
 import base64
@@ -7,7 +8,7 @@ from typing import Optional, Callable, List, Dict, Any
 from enum import Enum
 from pydub import AudioSegment
 
-from llama_index.core.tools import BaseTool, AsyncBaseTool, ToolSelection, adapt_to_async_tool, acall_tool_with_selection
+from llama_index.core.tools import BaseTool, AsyncBaseTool, ToolSelection, adapt_to_async_tool, call_tool_with_selection
 
 
 class TurnDetectionMode(Enum):
@@ -22,15 +23,29 @@ class RealtimeClient:
     handle responses, and manage the WebSocket connection.
 
     Attributes:
-        api_key (str): The API key for authentication.
-        model (str): The model to use for text and audio processing.
-        voice (str): The voice to use for audio output.
-        instructions (str): The instructions for the chatbot.
-        turn_detection_mode (TurnDetectionMode): The mode for turn detection.
-        tools (List[BaseTool]): The tools to use for function calling.
-        on_text_delta (Callable[[str], None]): Callback for text delta events.
-        on_audio_delta (Callable[[bytes], None]): Callback for audio delta events.
-        extra_event_handlers (Dict[str, Callable[[Dict[str, Any]], None]]): Additional event handlers.
+        api_key (str): 
+            The API key for authentication.
+        model (str): 
+            The model to use for text and audio processing.
+        voice (str): 
+            The voice to use for audio output.
+        instructions (str): 
+            The instructions for the chatbot.
+        turn_detection_mode (TurnDetectionMode): 
+            The mode for turn detection.
+        tools (List[BaseTool]): 
+            The tools to use for function calling.
+        on_text_delta (Callable[[str], None]): 
+            Callback for text delta events. 
+            Takes in a string and returns nothing.
+        on_audio_delta (Callable[[bytes], None]): 
+            Callback for audio delta events. 
+            Takes in bytes and returns nothing.
+        on_interrupt (Callable[[], None]): 
+            Callback for user interrupt events, should be used to stop audio playback.
+        extra_event_handlers (Dict[str, Callable[[Dict[str, Any]], None]]): 
+            Additional event handlers. 
+            Is a mapping of event names to functions that process the event payload.
     """
     def __init__(
         self, 
@@ -42,6 +57,7 @@ class RealtimeClient:
         tools: Optional[List[BaseTool]] = None,
         on_text_delta: Optional[Callable[[str], None]] = None,
         on_audio_delta: Optional[Callable[[bytes], None]] = None,
+        on_interrupt: Optional[Callable[[], None]] = None,
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], None]]] = None
     ):
         self.api_key = api_key
@@ -50,6 +66,7 @@ class RealtimeClient:
         self.ws = None
         self.on_text_delta = on_text_delta
         self.on_audio_delta = on_audio_delta
+        self.on_interrupt = on_interrupt
         self.instructions = instructions
         self.base_url = "wss://api.openai.com/v1/realtime"
         self.extra_event_handlers = extra_event_handlers or {}
@@ -59,6 +76,11 @@ class RealtimeClient:
         for i, tool in enumerate(tools):
             tools[i] = adapt_to_async_tool(tool)
         self.tools: List[AsyncBaseTool] = tools
+
+        # Track current response state
+        self._current_response_idcurrent_response_id = None
+        self._current_item_id = None
+        self._is_responding = False
         
     async def connect(self) -> None:
         """Establish WebSocket connection with the Realtime API."""
@@ -162,7 +184,7 @@ class RealtimeClient:
             await self.create_response()
 
     async def stream_audio(self, audio_chunk: bytes) -> None:
-        """Stream raw PCM audio data to the API."""
+        """Stream raw audio data to the API."""
         audio_b64 = base64.b64encode(audio_chunk).decode()
         
         append_event = {
@@ -206,17 +228,52 @@ class RealtimeClient:
         }
         await self.ws.send(json.dumps(event))
     
+    async def truncate_response(self):
+        """Truncate the conversation item to match what was actually played."""
+        if self._current_item_id:
+            event = {
+                "type": "conversation.item.truncate",
+                "item_id": self._current_item_id
+            }
+            await self.ws.send(json.dumps(event))
+
     async def call_tool(self, call_id: str,tool_name: str, tool_arguments: Dict[str, Any]) -> None:
         tool_selection = ToolSelection(
             tool_id="tool_id",
             tool_name=tool_name,
             tool_kwargs=tool_arguments
         )
-        tool_result = await acall_tool_with_selection(tool_selection, self.tools)
+
+        # avoid blocking the event loop with sync tools
+        # by using asyncio.to_thread
+        tool_result = await asyncio.to_thread(
+            call_tool_with_selection,
+            tool_selection, 
+            self.tools, 
+            verbose=True
+        )
         await self.send_function_result(call_id, str(tool_result))
 
+    async def handle_interruption(self):
+        """Handle user interruption of the current response."""
+        if not self._is_responding:
+            return
+            
+        print("\n[Handling interruption]")
+        
+        # 1. Cancel the current response
+        if self._current_response_id:
+            await self.cancel_response()
+        
+        # 2. Truncate the conversation item to what was actually played
+        if self._current_item_id:
+            await self.truncate_response()
+            
+        self._is_responding = False
+        self._current_response_id = None
+        self._current_item_id = None
+
     async def handle_messages(self) -> None:
-        """Main message handling loop."""
         try:
             async for message in self.ws:
                 event = json.loads(message)
@@ -225,7 +282,34 @@ class RealtimeClient:
                 if event_type == "error":
                     print(f"Error: {event['error']}")
                     continue
-                    
+                
+                # Track response state
+                elif event_type == "response.created":
+                    self._current_response_id = event.get("response", {}).get("id")
+                    self._is_responding = True
+                
+                elif event_type == "response.output_item.added":
+                    self._current_item_id = event.get("item", {}).get("id")
+                
+                elif event_type == "response.done":
+                    self._is_responding = False
+                    self._current_response_id = None
+                    self._current_item_id = None
+                
+                # Handle interruptions
+                elif event_type == "input_audio_buffer.speech_started":
+                    print("\n[Speech detected]")
+                    if self._is_responding:
+                        await self.handle_interruption()
+
+                    if self.on_interrupt:
+                        self.on_interrupt()
+
+                
+                elif event_type == "input_audio_buffer.speech_stopped":
+                    print("\n[Speech ended]")
+                
+                # Handle normal response events
                 elif event_type == "response.text.delta":
                     if self.on_text_delta:
                         self.on_text_delta(event["delta"])

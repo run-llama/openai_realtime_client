@@ -6,11 +6,17 @@ from openai_realtime_client import RealtimeClient, AudioHandler, InputHandler, T
 from llama_index.core.tools import FunctionTool
 
 # Add your own tools here!
-def get_my_phone_number(name: str) -> str:
+# NOTE: FunctionTool parses the docstring to get description, the tool name is the function name
+def get_phone_number(name: str) -> str:
     """Get my phone number."""
-    return "1234567890"
+    if name == "Jerry":
+        return "1234567890"
+    elif name == "Logan":
+        return "0987654321"
+    else:
+        return "Unknown"
 
-tools = [FunctionTool.from_defaults(fn=get_my_phone_number)]
+tools = [FunctionTool.from_defaults(fn=get_phone_number)]
 
 async def main():
     audio_handler = AudioHandler()
@@ -21,6 +27,7 @@ async def main():
         api_key=os.environ.get("OPENAI_API_KEY"),
         on_text_delta=lambda text: print(f"\nAssistant: {text}", end="", flush=True),
         on_audio_delta=lambda audio: audio_handler.play_audio(audio),
+        on_interrupt=lambda: audio_handler.stop_playback_immediately(),
         turn_detection_mode=TurnDetectionMode.SERVER_VAD,
         tools=tools,
     )
