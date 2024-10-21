@@ -78,7 +78,7 @@ class RealtimeClient:
         self.tools: List[AsyncBaseTool] = tools
 
         # Track current response state
-        self._current_response_idcurrent_response_id = None
+        self._current_response_id = None
         self._current_item_id = None
         self._is_responding = False
         
