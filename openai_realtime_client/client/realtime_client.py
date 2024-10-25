@@ -43,6 +43,12 @@ class RealtimeClient:
             Takes in bytes and returns nothing.
         on_interrupt (Callable[[], None]): 
             Callback for user interrupt events, should be used to stop audio playback.
+        on_input_transcript (Callable[[str], None]): 
+            Callback for input transcript events. 
+            Takes in a string and returns nothing.
+        on_output_transcript (Callable[[str], None]): 
+            Callback for output transcript events. 
+            Takes in a string and returns nothing.
         extra_event_handlers (Dict[str, Callable[[Dict[str, Any]], None]]): 
             Additional event handlers. 
             Is a mapping of event names to functions that process the event payload.
@@ -58,6 +64,8 @@ class RealtimeClient:
         on_text_delta: Optional[Callable[[str], None]] = None,
         on_audio_delta: Optional[Callable[[bytes], None]] = None,
         on_interrupt: Optional[Callable[[], None]] = None,
+        on_input_transcript: Optional[Callable[[str], None]] = None,  
+        on_output_transcript: Optional[Callable[[str], None]] = None,  
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], None]]] = None
     ):
         self.api_key = api_key
@@ -67,6 +75,8 @@ class RealtimeClient:
         self.on_text_delta = on_text_delta
         self.on_audio_delta = on_audio_delta
         self.on_interrupt = on_interrupt
+        self.on_input_transcript = on_input_transcript
+        self.on_output_transcript = on_output_transcript
         self.instructions = instructions
         self.base_url = "wss://api.openai.com/v1/realtime"
         self.extra_event_handlers = extra_event_handlers or {}
@@ -81,7 +91,14 @@ class RealtimeClient:
         self._current_response_idcurrent_response_id = None
         self._current_item_id = None
         self._is_responding = False
+        # Track printing state for input and output transcripts
+        self._print_input_transcript = False
+        self._output_transcript_buffer = ""
         
+        
+
+        
+
     async def connect(self) -> None:
         """Establish WebSocket connection with the Realtime API."""
         url = f"{self.base_url}?model={self.model}"
@@ -298,7 +315,7 @@ class RealtimeClient:
                 
                 # Handle interruptions
                 elif event_type == "input_audio_buffer.speech_started":
-                    print("\n[Speech detected]")
+                    print("\n[Speech detected")
                     if self._is_responding:
                         await self.handle_interruption()
 
@@ -321,6 +338,30 @@ class RealtimeClient:
                         
                 elif event_type == "response.function_call_arguments.done":
                     await self.call_tool(event["call_id"], event['name'], json.loads(event['arguments']))
+
+                # Handle input audio transcription
+                elif event_type == "conversation.item.input_audio_transcription.completed":
+                    transcript = event.get("transcript", "")
+                    
+                    if self.on_input_transcript:
+                        await asyncio.to_thread(self.on_input_transcript,transcript)
+                        self._print_input_transcript = True
+
+                # Handle output audio transcription
+                elif event_type == "response.audio_transcript.delta":
+                    if self.on_output_transcript:
+                        delta = event.get("delta", "")
+                        if not self._print_input_transcript:
+                            self._output_transcript_buffer += delta
+                        else:
+                            if self._output_transcript_buffer:
+                                await asyncio.to_thread(self.on_output_transcript,self._output_transcript_buffer)
+                                self._output_transcript_buffer = ""
+                            await asyncio.to_thread(self.on_output_transcript,delta)
+
+
+                elif event_type == "response.audio_transcript.done":
+                    self._print_input_transcript = False
 
                 elif event_type in self.extra_event_handlers:
                     self.extra_event_handlers[event_type](event)

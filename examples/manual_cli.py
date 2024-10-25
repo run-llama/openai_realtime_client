@@ -30,6 +30,8 @@ async def main():
         api_key=os.environ.get("OPENAI_API_KEY"),
         on_text_delta=lambda text: print(f"\nAssistant: {text}", end="", flush=True),
         on_audio_delta=lambda audio: audio_handler.play_audio(audio),
+        on_input_transcript=lambda transcript: print(f"\nYou said: {transcript}\nAssistant: ", end="", flush=True),
+        on_output_transcript=lambda transcript: print(f"{transcript}", end="", flush=True),
         tools=tools,
     )
     
