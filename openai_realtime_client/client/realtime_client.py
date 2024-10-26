@@ -31,6 +31,8 @@ class RealtimeClient:
             The voice to use for audio output.
         instructions (str): 
             The instructions for the chatbot.
+        temperature (float):
+            The chatbot's temperature.
         turn_detection_mode (TurnDetectionMode): 
             The mode for turn detection.
         tools (List[BaseTool]): 
@@ -53,6 +55,7 @@ class RealtimeClient:
         model: str = "gpt-4o-realtime-preview-2024-10-01",
         voice: str = "alloy",
         instructions: str = "You are a helpful assistant",
+        temperature: float = 0.8,
         turn_detection_mode: TurnDetectionMode = TurnDetectionMode.MANUAL,
         tools: Optional[List[BaseTool]] = None,
         on_text_delta: Optional[Callable[[str], None]] = None,
@@ -68,6 +71,7 @@ class RealtimeClient:
         self.on_audio_delta = on_audio_delta
         self.on_interrupt = on_interrupt
         self.instructions = instructions
+        self.temperature = temperature
         self.base_url = "wss://api.openai.com/v1/realtime"
         self.extra_event_handlers = extra_event_handlers or {}
         self.turn_detection_mode = turn_detection_mode
@@ -110,7 +114,7 @@ class RealtimeClient:
                 },
                 "tools": tools,
                 "tool_choice": "auto",
-                "temperature": 0.8,
+                "temperature": self.temperature,
             })
         elif self.turn_detection_mode == TurnDetectionMode.SERVER_VAD:
             await self.update_session({
@@ -130,7 +134,7 @@ class RealtimeClient:
                 },
                 "tools": tools,
                 "tool_choice": "auto",
-                "temperature": 0.8,
+                "temperature": self.temperature,
             })
         else:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
