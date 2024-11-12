@@ -54,7 +54,7 @@ class AudioHandler:
 
         # Playback params
         self.playback_stream = None
-        self.playback_buffer = queue.Queue(maxsize=20)
+        self.playback_buffer = queue.Queue(maxsize=1024)
         self.playback_event = threading.Event()
         self.playback_thread = None
         self.stop_playback = False
