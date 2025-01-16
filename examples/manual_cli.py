@@ -2,7 +2,6 @@ import asyncio
 import os
 
 from pynput import keyboard
-
 from openai_realtime_client import RealtimeClient, InputHandler, AudioHandler
 from llama_index.core.tools import FunctionTool
 
