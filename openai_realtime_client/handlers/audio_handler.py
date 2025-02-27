@@ -10,7 +10,6 @@ import threading
 
 from ..client.realtime_client import RealtimeClient
 
-
 class AudioHandler:
     """
     Handles audio input and output for the chatbot.
@@ -59,6 +58,34 @@ class AudioHandler:
         self.playback_thread = None
         self.stop_playback = False
 
+        # Device indices
+        self.input_device_index = None
+        self.output_device_index = None
+
+    def list_devices(self):
+        """List available audio input and output devices."""
+        for i in range(self.audio.get_device_count()):
+            device_info = self.audio.get_device_info_by_index(i)
+            print(f"Device {i}: {device_info['name']} (Input Channels: {device_info['maxInputChannels']}, Output Channels: {device_info['maxOutputChannels']})")
+
+    def select_input_device(self, index: int):
+        """Select input device by index and adjust sampling rate."""
+        device_info = self.audio.get_device_info_by_index(index)
+        if device_info['maxInputChannels'] > 0:
+            self.input_device_index = index
+            self.rate = int(device_info['defaultSampleRate'])
+        else:
+            print(f"Device {index} is not a valid input device.")
+
+    def select_output_device(self, index: int):
+        """Select output device by index and adjust sampling rate."""
+        device_info = self.audio.get_device_info_by_index(index)
+        if device_info['maxOutputChannels'] > 0:
+            self.output_device_index = index
+            self.rate = int(device_info['defaultSampleRate'])
+        else:
+            print(f"Device {index} is not a valid output device.")
+
     def start_recording(self) -> bytes:
         """Start recording audio from microphone and return bytes"""
         if self.recording:
@@ -70,7 +97,8 @@ class AudioHandler:
             channels=self.channels,
             rate=self.rate,
             input=True,
-            frames_per_buffer=self.chunk
+            frames_per_buffer=self.chunk,
+            input_device_index=self.input_device_index
         )
         
         print("\nRecording... Press 'space' to stop.")
@@ -128,7 +156,8 @@ class AudioHandler:
             channels=self.channels,
             rate=self.rate,
             input=True,
-            frames_per_buffer=self.chunk
+            frames_per_buffer=self.chunk,
+            input_device_index=self.input_device_index
         )
         
         print("\nStreaming audio... Press 'q' to stop.")
@@ -174,7 +203,8 @@ class AudioHandler:
             channels=self.channels,
             rate=self.rate,
             output=True,
-            frames_per_buffer=self.chunk
+            frames_per_buffer=self.chunk,
+            output_device_index=self.output_device_index
         )
 
         while not self.stop_playback:
