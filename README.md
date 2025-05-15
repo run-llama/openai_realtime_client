@@ -9,7 +9,7 @@ Include two examples that run directly in the terminal -- using both manual and 
 Install system deps:
 
 ```bash
-brew install ffmpeg
+brew install ffmpeg portaudio
 ```
 
 Install python deps:
