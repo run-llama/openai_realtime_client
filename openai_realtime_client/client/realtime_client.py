@@ -225,6 +225,9 @@ class RealtimeClient:
         if functions:
             event["response"]["tools"] = functions
             
+        # Make sure we print the transcript for the response
+        self._print_input_transcript = True
+
         await self.ws.send(json.dumps(event))
 
     async def send_function_result(self, call_id: str, result: Any) -> None:
